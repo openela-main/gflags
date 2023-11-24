@@ -1,0 +1,1287 @@
+From 4e61c45ef9b3321695a647003d6849d12cf161f8 Mon Sep 17 00:00:00 2001
+From: Andreas Schuh <andreas.schuh.84@gmail.com>
+Date: Tue, 27 Oct 2015 23:00:58 +0000
+Subject: [PATCH] #124 Remove using namespace from mutex.h
+
+---
+ src/gflags.cc | 3 +++
+ src/mutex.h   | 3 ---
+ 2 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/src/gflags.cc b/src/gflags.cc
+index 285050fe..a35bbfe6 100644
+--- a/src/gflags.cc
++++ b/src/gflags.cc
+@@ -111,6 +111,9 @@
+ #include "mutex.h"
+ #include "util.h"
+ 
++using namespace MUTEX_NAMESPACE;
++
++
+ // Special flags, type 1: the 'recursive' flags.  They set another flag's val.
+ DEFINE_string(flagfile,   "", "load flags from file");
+ DEFINE_string(fromenv,    "", "set flags from the environment"
+diff --git a/src/mutex.h b/src/mutex.h
+index 0bdd9d5f..ff96f2b6 100644
+--- a/src/mutex.h
++++ b/src/mutex.h
+@@ -344,8 +344,5 @@ class WriterMutexLock {
+ 
+ }  // namespace MUTEX_NAMESPACE
+ 
+-using namespace MUTEX_NAMESPACE;
+-
+-#undef MUTEX_NAMESPACE
+ 
+ #endif  /* #define GFLAGS_MUTEX_H__ */
+
+From 9db828953a1047c95bf5fb780c3c1f9453f806eb Mon Sep 17 00:00:00 2001
+From: Andreas Schuh <andreas.schuh.84@gmail.com>
+Date: Wed, 28 Oct 2015 00:19:33 +0000
+Subject: [PATCH] #125 Fix unused typedef/variable warning for static assertion
+
+---
+ src/util.h | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/src/util.h b/src/util.h
+index 366e1be2..fb59b38d 100644
+--- a/src/util.h
++++ b/src/util.h
+@@ -88,9 +88,10 @@ typedef unsigned char uint8;
+ 
+ // -- utility macros ---------------------------------------------------------
+ 
+-template <bool> struct CompileAssert {};
++template <bool b> struct CompileAssert;
++template <> struct CompileAssert<true> {};
+ #define COMPILE_ASSERT(expr, msg) \
+-  typedef CompileAssert<(bool(expr))> msg[bool(expr) ? 1 : -1]
++  enum { assert_##msg = sizeof(CompileAssert<bool(expr)>) }
+ 
+ // Returns the number of elements in an array.
+ #define arraysize(arr) (sizeof(arr)/sizeof(*(arr)))
+
+From 4f100cb6a0380aeb32c87672d2c847070d691b2e Mon Sep 17 00:00:00 2001
+From: Sergey Sharybin <sergey.vfx@gmail.com>
+Date: Thu, 31 Dec 2015 17:09:59 +0500
+Subject: [PATCH] Resolve several missing declarations warnings
+
+---
+ src/gflags_completions.cc    | 2 ++
+ test/gflags_declare_flags.cc | 1 +
+ test/gflags_unittest.cc      | 2 +-
+ 3 files changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/src/gflags_completions.cc b/src/gflags_completions.cc
+index 3a476230..d7097cae 100644
+--- a/src/gflags_completions.cc
++++ b/src/gflags_completions.cc
+@@ -47,6 +47,8 @@
+ //     5b) Trim most flag's descriptions to fit on a single terminal line
+ 
+ 
++#include "gflags_completions.h"
++
+ #include "config.h"
+ 
+ #include <stdio.h>
+diff --git a/test/gflags_declare_flags.cc b/test/gflags_declare_flags.cc
+index dc53de59..24916861 100644
+--- a/test/gflags_declare_flags.cc
++++ b/test/gflags_declare_flags.cc
+@@ -3,6 +3,7 @@
+ 
+ DECLARE_string(message); // in gflags_delcare_test.cc
+ 
++void print_message();
+ void print_message()
+ {
+   std::cout << FLAGS_message << std::endl;
+diff --git a/test/gflags_unittest.cc b/test/gflags_unittest.cc
+index 80f7398a..cc3049bf 100644
+--- a/test/gflags_unittest.cc
++++ b/test/gflags_unittest.cc
+@@ -1485,7 +1485,7 @@ TEST(FlagsValidator, FlagSaver) {
+ 
+ }  // unnamed namespace
+ 
+-int main(int argc, char **argv) {
++static int main(int argc, char **argv) {
+ 
+   // Run unit tests only if called without arguments, otherwise this program
+   // is used by an "external" usage test
+
+From 7a69001868a32d80166cc9510379c980de4abaa4 Mon Sep 17 00:00:00 2001
+From: Andreas Schuh <andreas.schuh.84@gmail.com>
+Date: Fri, 19 Feb 2016 12:59:05 +0000
+Subject: [PATCH] #51 Use static StringFlagDestructor to destruct string
+ objects allocated by placement new
+
+---
+ src/gflags.h.in | 21 +++++++++++++++++++++
+ 1 file changed, 21 insertions(+)
+
+diff --git a/src/gflags.h.in b/src/gflags.h.in
+index 0324d390..88ab1aa3 100644
+--- a/src/gflags.h.in
++++ b/src/gflags.h.in
+@@ -538,6 +538,26 @@ inline clstring* dont_pass0toDEFINE_string(char *stringspot,
+ }
+ inline clstring* dont_pass0toDEFINE_string(char *stringspot,
+                                            int value);
++
++// Auxiliary class used to explicitly call destructor of string objects
++// allocated using placement new during static program deinitialization.
++// The destructor MUST be an inline function such that the explicit
++// destruction occurs in the same compilation unit as the placement new.
++class StringFlagDestructor {
++  void *current_storage_;
++  void *defvalue_storage_;
++
++public: 
++
++  StringFlagDestructor(void *current, void *defvalue)
++  : current_storage_(current), defvalue_storage_(defvalue) {}
++
++  ~StringFlagDestructor() {
++    reinterpret_cast<clstring*>(current_storage_ )->~clstring();
++    reinterpret_cast<clstring*>(defvalue_storage_)->~clstring();
++  }
++};
++
+ }  // namespace fLS
+ 
+ // We need to define a var named FLAGS_no##name so people don't define
+@@ -557,6 +577,7 @@ inline clstring* dont_pass0toDEFINE_string(char *stringspot,
+     static GFLAGS_NAMESPACE::FlagRegisterer o_##name(                       \
+         #name, "string", MAYBE_STRIPPED_HELP(txt), __FILE__,                \
+         s_##name[0].s, new (s_##name[1].s) clstring(*FLAGS_no##name));      \
++    static StringFlagDestructor d_##name(s_##name[0].s, s_##name[1].s);     \
+     extern GFLAGS_DLL_DEFINE_FLAG clstring& FLAGS_##name;                   \
+     using fLS::FLAGS_##name;                                                \
+     clstring& FLAGS_##name = *FLAGS_no##name;                               \
+
+From 8ac4bc41aa5710c8a2395ce8e16918951eb81d24 Mon Sep 17 00:00:00 2001
+From: Andreas Schuh <andreas.schuh.84@gmail.com>
+Date: Mon, 29 Feb 2016 16:12:33 +0000
+Subject: [PATCH] fix: Pass std::string directly, no need for c_str() call
+
+---
+ test/gflags_unittest.cc | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/test/gflags_unittest.cc b/test/gflags_unittest.cc
+index cc3049bf..f2054660 100644
+--- a/test/gflags_unittest.cc
++++ b/test/gflags_unittest.cc
+@@ -1514,7 +1514,7 @@ static int main(int argc, char **argv) {
+   // The non-recommended way:
+   FLAGS_changed_bool2 = true;
+ 
+-  SetUsageMessage(usage_message.c_str());
++  SetUsageMessage(usage_message);
+   SetVersionString("test_version");
+   ParseCommandLineFlags(&argc, &argv, true);
+   MakeTmpdir(&FLAGS_test_tmpdir);
+
+From 2a3454c104890961930d9cd552c681666d20e90d Mon Sep 17 00:00:00 2001
+From: Andreas Schuh <andreas.schuh.84@gmail.com>
+Date: Mon, 29 Feb 2016 19:18:21 +0000
+Subject: [PATCH] fix: DLL import/export defines for unit tests, remove
+ obsolete config_for_unittests.h
+
+---
+ test/config_for_unittests.h     | 79 ---------------------------------
+ test/gflags_declare_flags.cc    |  2 +
+ test/gflags_strip_flags_test.cc |  1 -
+ test/gflags_unittest.cc         |  1 -
+ 4 files changed, 2 insertions(+), 81 deletions(-)
+ delete mode 100644 test/config_for_unittests.h
+ mode change 100644 => 100755 test/gflags_declare_flags.cc
+ mode change 100644 => 100755 test/gflags_strip_flags_test.cc
+ mode change 100644 => 100755 test/gflags_unittest.cc
+
+diff --git a/test/config_for_unittests.h b/test/config_for_unittests.h
+deleted file mode 100644
+index 914571b3..00000000
+--- a/test/config_for_unittests.h
++++ /dev/null
+@@ -1,79 +0,0 @@
+-// Copyright (c) 2007, Google Inc.
+-// All rights reserved.
+-// 
+-// Redistribution and use in source and binary forms, with or without
+-// modification, are permitted provided that the following conditions are
+-// met:
+-// 
+-//     * Redistributions of source code must retain the above copyright
+-// notice, this list of conditions and the following disclaimer.
+-//     * Redistributions in binary form must reproduce the above
+-// copyright notice, this list of conditions and the following disclaimer
+-// in the documentation and/or other materials provided with the
+-// distribution.
+-//     * Neither the name of Google Inc. nor the names of its
+-// contributors may be used to endorse or promote products derived from
+-// this software without specific prior written permission.
+-// 
+-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+-// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+-// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+-// A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+-// OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+-// SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+-// LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+-// THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+-// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+-
+-// ---
+-// All Rights Reserved.
+-//
+-//
+-// This file is needed for windows -- unittests are not part of the
+-// gflags dll, but still want to include config.h just like the
+-// dll does, so they can use internal tools and APIs for testing.
+-//
+-// The problem is that config.h declares GFLAGS_DLL_DECL to be
+-// for exporting symbols, but the unittest needs to *import* symbols
+-// (since it's not the dll).
+-//
+-// The solution is to have this file, which is just like config.h but
+-// sets GFLAGS_DLL_DECL to do a dllimport instead of a dllexport.
+-//
+-// The reason we need this extra GFLAGS_DLL_DECL_FOR_UNITTESTS
+-// variable is in case people want to set GFLAGS_DLL_DECL explicitly
+-// to something other than __declspec(dllexport).  In that case, they
+-// may want to use something other than __declspec(dllimport) for the
+-// unittest case.  For that, we allow folks to define both
+-// GFLAGS_DLL_DECL and GFLAGS_DLL_DECL_FOR_UNITTESTS explicitly.
+-//
+-// NOTE: This file is equivalent to config.h on non-windows systems,
+-// which never defined GFLAGS_DLL_DECL_FOR_UNITTESTS and always
+-// define GFLAGS_DLL_DECL to the empty string.
+-
+-#include "config.h"
+-
+-#ifdef GFLAGS_DLL_DECL
+-#  undef GFLAGS_DLL_DECL
+-#endif
+-#ifdef GFLAGS_DLL_DEFINE_FLAG
+-#  undef GFLAGS_DLL_DEFINE_FLAG
+-#endif
+-#ifdef GFLAGS_DLL_DECLARE_FLAG
+-#  undef GFLAGS_DLL_DECLARE_FLAG
+-#endif
+-
+-#ifdef GFLAGS_DLL_DECL_FOR_UNITTESTS
+-#  define GFLAGS_DLL_DECL  GFLAGS_DLL_DECL_FOR_UNITTESTS
+-#else
+-#  define GFLAGS_DLL_DECL  // if DLL_DECL_FOR_UNITTESTS isn't defined, use ""
+-#endif
+-
+-// Import flags defined by gflags.cc
+-#if GFLAGS_IS_A_DLL && defined(_MSC_VER)
+-#  define GFLAGS_DLL_DECLARE_FLAG __declspec(dllimport)
+-#else
+-#  define GFLAGS_DLL_DECLARE_FLAG
+-#endif
+\ No newline at end of file
+diff --git a/test/gflags_declare_flags.cc b/test/gflags_declare_flags.cc
+old mode 100644
+new mode 100755
+index 24916861..3d952a88
+--- a/test/gflags_declare_flags.cc
++++ b/test/gflags_declare_flags.cc
+@@ -1,3 +1,5 @@
++#define GFLAGS_DLL_DECLARE_FLAG
++
+ #include <iostream>
+ #include <gflags/gflags_declare.h>
+ 
+diff --git a/test/gflags_strip_flags_test.cc b/test/gflags_strip_flags_test.cc
+old mode 100644
+new mode 100755
+index 25ef53a5..143f0c68
+--- a/test/gflags_strip_flags_test.cc
++++ b/test/gflags_strip_flags_test.cc
+@@ -34,7 +34,6 @@
+ // script that runs 'strings' over this program and makes sure
+ // that the help string is not in there.
+ 
+-#include "config_for_unittests.h"
+ #define STRIP_FLAG_HELP 1
+ #include <gflags/gflags.h>
+ 
+diff --git a/test/gflags_unittest.cc b/test/gflags_unittest.cc
+old mode 100644
+new mode 100755
+index f2054660..5659d2a8
+--- a/test/gflags_unittest.cc
++++ b/test/gflags_unittest.cc
+@@ -32,7 +32,6 @@
+ // For now, this unit test does not cover all features of
+ // gflags.cc
+ 
+-#include "config_for_unittests.h"
+ #include <gflags/gflags.h>
+ 
+ #include <math.h>       // for isinf() and isnan()
+
+From 799e910c74d629400cb6859e592e345a50030787 Mon Sep 17 00:00:00 2001
+From: Andreas Schuh <andreas.schuh.84@gmail.com>
+Date: Tue, 1 Mar 2016 19:56:02 +0000
+Subject: [PATCH] fix: Include private config.h in gflags_unittest.cc
+
+---
+ test/gflags_unittest.cc | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/test/gflags_unittest.cc b/test/gflags_unittest.cc
+index 5659d2a8..1fd373dc 100755
+--- a/test/gflags_unittest.cc
++++ b/test/gflags_unittest.cc
+@@ -32,6 +32,7 @@
+ // For now, this unit test does not cover all features of
+ // gflags.cc
+ 
++#include "config.h"
+ #include <gflags/gflags.h>
+ 
+ #include <math.h>       // for isinf() and isnan()
+
+From 752c63249bf3f1969cb3ae140ededa359441a57a Mon Sep 17 00:00:00 2001
+From: Andreas Schuh <andreas.schuh.84@gmail.com>
+Date: Tue, 1 Mar 2016 21:34:24 +0000
+Subject: [PATCH] fix: Include order of config.h and gflags.h in unit test
+
+---
+ test/gflags_unittest.cc | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/test/gflags_unittest.cc b/test/gflags_unittest.cc
+index 1fd373dc..427af8c1 100755
+--- a/test/gflags_unittest.cc
++++ b/test/gflags_unittest.cc
+@@ -32,9 +32,11 @@
+ // For now, this unit test does not cover all features of
+ // gflags.cc
+ 
+-#include "config.h"
+ #include <gflags/gflags.h>
+ 
++#include "config.h"
++#include "util.h"
++
+ #include <math.h>       // for isinf() and isnan()
+ #include <stdio.h>
+ #include <stdlib.h>
+@@ -44,7 +46,6 @@
+ #endif
+ #include <vector>
+ #include <string>
+-#include "util.h"
+ TEST_INIT
+ EXPECT_DEATH_INIT
+ 
+
+From eaf05340dc9e5367fdd43a9eea0c39a0aec44f16 Mon Sep 17 00:00:00 2001
+From: "Allan L. Bazinet" <allan.bazinet@gmail.com>
+Date: Tue, 5 Apr 2016 10:50:21 -0700
+Subject: [PATCH] Support uint32 as flag type
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+From #99, “Given that there is an unsigned flag type for 64-bit
+integers, it is probably reasonable to request/expect the same for
+32-bit integers.”
+---
+ src/gflags.cc           | 41 +++++++++++++++++++++++++++++++-----
+ src/gflags.h.in         |  6 ++++++
+ src/gflags_declare.h.in |  3 +++
+ src/gflags_ns.h.in      |  1 +
+ test/gflags_unittest.cc | 46 ++++++++++++++++++++++++++++++-----------
+ 5 files changed, 80 insertions(+), 17 deletions(-)
+
+diff --git a/src/gflags.cc b/src/gflags.cc
+index 85b1ef76..9881a80e 100644
+--- a/src/gflags.cc
++++ b/src/gflags.cc
+@@ -208,11 +208,12 @@ class FlagValue {
+   enum ValueType {
+     FV_BOOL = 0,
+     FV_INT32 = 1,
+-    FV_INT64 = 2,
+-    FV_UINT64 = 3,
+-    FV_DOUBLE = 4,
+-    FV_STRING = 5,
+-    FV_MAX_INDEX = 5,
++    FV_UINT32 = 2,
++    FV_INT64 = 3,
++    FV_UINT64 = 4,
++    FV_DOUBLE = 5,
++    FV_STRING = 6,
++    FV_MAX_INDEX = 7,
+   };
+   const char* TypeName() const;
+   bool Equal(const FlagValue& x) const;
+@@ -260,6 +261,7 @@ FlagValue::~FlagValue() {
+   switch (type_) {
+     case FV_BOOL: delete reinterpret_cast<bool*>(value_buffer_); break;
+     case FV_INT32: delete reinterpret_cast<int32*>(value_buffer_); break;
++    case FV_UINT32: delete reinterpret_cast<uint32*>(value_buffer_); break;
+     case FV_INT64: delete reinterpret_cast<int64*>(value_buffer_); break;
+     case FV_UINT64: delete reinterpret_cast<uint64*>(value_buffer_); break;
+     case FV_DOUBLE: delete reinterpret_cast<double*>(value_buffer_); break;
+@@ -308,6 +310,16 @@ bool FlagValue::ParseFrom(const char* value) {
+       SET_VALUE_AS(int32, static_cast<int32>(r));
+       return true;
+     }
++    case FV_UINT32: {
++      while (*value == ' ') value++;
++      if (*value == '-') return false;  // negative number
++      const uint64 r = strtou64(value, &end, base);
++      if (errno || end != value + strlen(value))  return false;  // bad parse
++        if (static_cast<uint32>(r) != r)  // worked, but number out of range
++        return false;
++      SET_VALUE_AS(uint32, static_cast<uint32>(r));
++      return true;
++    }
+     case FV_INT64: {
+       const int64 r = strto64(value, &end, base);
+       if (errno || end != value + strlen(value))  return false;  // bad parse
+@@ -343,6 +355,9 @@ string FlagValue::ToString() const {
+     case FV_INT32:
+       snprintf(intbuf, sizeof(intbuf), "%" PRId32, VALUE_AS(int32));
+       return intbuf;
++    case FV_UINT32:
++      snprintf(intbuf, sizeof(intbuf), "%" PRIu32, VALUE_AS(uint32));
++      return intbuf;
+     case FV_INT64:
+       snprintf(intbuf, sizeof(intbuf), "%" PRId64, VALUE_AS(int64));
+       return intbuf;
+@@ -369,6 +384,9 @@ bool FlagValue::Validate(const char* flagname,
+     case FV_INT32:
+       return reinterpret_cast<bool (*)(const char*, int32)>(
+           validate_fn_proto)(flagname, VALUE_AS(int32));
++    case FV_UINT32:
++      return reinterpret_cast<bool (*)(const char*, uint32)>(
++          validate_fn_proto)(flagname, VALUE_AS(uint32));
+     case FV_INT64:
+       return reinterpret_cast<bool (*)(const char*, int64)>(
+           validate_fn_proto)(flagname, VALUE_AS(int64));
+@@ -391,6 +409,7 @@ const char* FlagValue::TypeName() const {
+   static const char types[] =
+       "bool\0xx"
+       "int32\0x"
++      "uin32\0x"
+       "int64\0x"
+       "uint64\0"
+       "double\0"
+@@ -409,6 +428,7 @@ bool FlagValue::Equal(const FlagValue& x) const {
+   switch (type_) {
+     case FV_BOOL:   return VALUE_AS(bool) == OTHER_VALUE_AS(x, bool);
+     case FV_INT32:  return VALUE_AS(int32) == OTHER_VALUE_AS(x, int32);
++    case FV_UINT32: return VALUE_AS(uint32) == OTHER_VALUE_AS(x, uint32);
+     case FV_INT64:  return VALUE_AS(int64) == OTHER_VALUE_AS(x, int64);
+     case FV_UINT64: return VALUE_AS(uint64) == OTHER_VALUE_AS(x, uint64);
+     case FV_DOUBLE: return VALUE_AS(double) == OTHER_VALUE_AS(x, double);
+@@ -422,6 +442,7 @@ FlagValue* FlagValue::New() const {
+   switch (type_) {
+     case FV_BOOL:   return new FlagValue(new bool(false), type, true);
+     case FV_INT32:  return new FlagValue(new int32(0), type, true);
++    case FV_UINT32: return new FlagValue(new uint32(0), type, true);
+     case FV_INT64:  return new FlagValue(new int64(0), type, true);
+     case FV_UINT64: return new FlagValue(new uint64(0), type, true);
+     case FV_DOUBLE: return new FlagValue(new double(0.0), type, true);
+@@ -435,6 +456,7 @@ void FlagValue::CopyFrom(const FlagValue& x) {
+   switch (type_) {
+     case FV_BOOL:   SET_VALUE_AS(bool, OTHER_VALUE_AS(x, bool));      break;
+     case FV_INT32:  SET_VALUE_AS(int32, OTHER_VALUE_AS(x, int32));    break;
++    case FV_UINT32: SET_VALUE_AS(uint32, OTHER_VALUE_AS(x, uint32));  break;
+     case FV_INT64:  SET_VALUE_AS(int64, OTHER_VALUE_AS(x, int64));    break;
+     case FV_UINT64: SET_VALUE_AS(uint64, OTHER_VALUE_AS(x, uint64));  break;
+     case FV_DOUBLE: SET_VALUE_AS(double, OTHER_VALUE_AS(x, double));  break;
+@@ -451,6 +473,7 @@ int FlagValue::ValueSize() const {
+   static const uint8 valuesize[] = {
+     sizeof(bool),
+     sizeof(int32),
++    sizeof(uint32),
+     sizeof(int64),
+     sizeof(uint64),
+     sizeof(double),
+@@ -1781,6 +1804,7 @@ bool ReadFromFlagsFile(const string& filename, const char* prog_name,
+ // --------------------------------------------------------------------
+ // BoolFromEnv()
+ // Int32FromEnv()
++// Uint32FromEnv()
+ // Int64FromEnv()
+ // Uint64FromEnv()
+ // DoubleFromEnv()
+@@ -1797,6 +1821,9 @@ bool BoolFromEnv(const char *v, bool dflt) {
+ int32 Int32FromEnv(const char *v, int32 dflt) {
+   return GetFromEnv(v, "int32", dflt);
+ }
++uint32 Uint32FromEnv(const char *v, uint32 dflt) {
++  return GetFromEnv(v, "uint32", dflt);
++}
+ int64 Int64FromEnv(const char *v, int64 dflt)    {
+   return GetFromEnv(v, "int64", dflt);
+ }
+@@ -1840,6 +1867,10 @@ bool RegisterFlagValidator(const int32* flag,
+                            bool (*validate_fn)(const char*, int32)) {
+   return AddFlagValidator(flag, reinterpret_cast<ValidateFnProto>(validate_fn));
+ }
++bool RegisterFlagValidator(const uint32* flag,
++                           bool (*validate_fn)(const char*, uint32)) {
++  return AddFlagValidator(flag, reinterpret_cast<ValidateFnProto>(validate_fn));
++}
+ bool RegisterFlagValidator(const int64* flag,
+                            bool (*validate_fn)(const char*, int64)) {
+   return AddFlagValidator(flag, reinterpret_cast<ValidateFnProto>(validate_fn));
+diff --git a/src/gflags.h.in b/src/gflags.h.in
+index 88ab1aa3..03b77766 100644
+--- a/src/gflags.h.in
++++ b/src/gflags.h.in
+@@ -128,6 +128,7 @@ namespace GFLAGS_NAMESPACE {
+ // validator is already registered for this flag).
+ extern GFLAGS_DLL_DECL bool RegisterFlagValidator(const bool*        flag, bool (*validate_fn)(const char*, bool));
+ extern GFLAGS_DLL_DECL bool RegisterFlagValidator(const int32*       flag, bool (*validate_fn)(const char*, int32));
++extern GFLAGS_DLL_DECL bool RegisterFlagValidator(const uint32*      flag, bool (*validate_fn)(const char*, uint32));
+ extern GFLAGS_DLL_DECL bool RegisterFlagValidator(const int64*       flag, bool (*validate_fn)(const char*, int64));
+ extern GFLAGS_DLL_DECL bool RegisterFlagValidator(const uint64*      flag, bool (*validate_fn)(const char*, uint64));
+ extern GFLAGS_DLL_DECL bool RegisterFlagValidator(const double*      flag, bool (*validate_fn)(const char*, double));
+@@ -313,6 +314,7 @@ extern GFLAGS_DLL_DECL bool ReadFromFlagsFile(const std::string& filename, const
+ 
+ extern GFLAGS_DLL_DECL bool BoolFromEnv(const char *varname, bool defval);
+ extern GFLAGS_DLL_DECL int32 Int32FromEnv(const char *varname, int32 defval);
++extern GFLAGS_DLL_DECL uint32 Uint32FromEnv(const char *varname, uint32 defval);
+ extern GFLAGS_DLL_DECL int64 Int64FromEnv(const char *varname, int64 defval);
+ extern GFLAGS_DLL_DECL uint64 Uint64FromEnv(const char *varname, uint64 defval);
+ extern GFLAGS_DLL_DECL double DoubleFromEnv(const char *varname, double defval);
+@@ -508,6 +510,10 @@ GFLAGS_DLL_DECL bool IsBoolFlag(bool from);
+    DEFINE_VARIABLE(GFLAGS_NAMESPACE::int32, I, \
+                    name, val, txt)
+ 
++#define DEFINE_uint32(name,val, txt) \
++   DEFINE_VARIABLE(GFLAGS_NAMESPACE::uint32, U, \
++                   name, val, txt)
++
+ #define DEFINE_int64(name, val, txt) \
+    DEFINE_VARIABLE(GFLAGS_NAMESPACE::int64, I64, \
+                    name, val, txt)
+diff --git a/src/gflags_declare.h.in b/src/gflags_declare.h.in
+index 279db245..a8b76f71 100644
+--- a/src/gflags_declare.h.in
++++ b/src/gflags_declare.h.in
+@@ -120,6 +120,9 @@ typedef std::string clstring;
+ #define DECLARE_int32(name) \
+   DECLARE_VARIABLE(::GFLAGS_NAMESPACE::int32, I, name)
+ 
++#define DECLARE_uint32(name) \
++  DECLARE_VARIABLE(::GFLAGS_NAMESPACE::uint32, U, name)
++
+ #define DECLARE_int64(name) \
+   DECLARE_VARIABLE(::GFLAGS_NAMESPACE::int64, I64, name)
+ 
+diff --git a/src/gflags_ns.h.in b/src/gflags_ns.h.in
+index f692666c..ef6ac298 100644
+--- a/src/gflags_ns.h.in
++++ b/src/gflags_ns.h.in
+@@ -77,6 +77,7 @@ using GFLAGS_NAMESPACE::AppendFlagsIntoFile;
+ using GFLAGS_NAMESPACE::ReadFromFlagsFile;
+ using GFLAGS_NAMESPACE::BoolFromEnv;
+ using GFLAGS_NAMESPACE::Int32FromEnv;
++using GFLAGS_NAMESPACE::Uint32FromEnv;
+ using GFLAGS_NAMESPACE::Int64FromEnv;
+ using GFLAGS_NAMESPACE::Uint64FromEnv;
+ using GFLAGS_NAMESPACE::DoubleFromEnv;
+diff --git a/test/gflags_unittest.cc b/test/gflags_unittest.cc
+index 427af8c1..045d0125 100755
+--- a/test/gflags_unittest.cc
++++ b/test/gflags_unittest.cc
+@@ -75,6 +75,7 @@ DECLARE_string(tryfromenv);   // in gflags.cc
+ DEFINE_bool(test_bool, false, "tests bool-ness");
+ DEFINE_int32(test_int32, -1, "");
+ DEFINE_int64(test_int64, -2, "");
++DEFINE_uint32(test_uint32, 1, "");
+ DEFINE_uint64(test_uint64, 2, "");
+ DEFINE_double(test_double, -1.0, "");
+ DEFINE_string(test_string, "initial", "");
+@@ -115,6 +116,7 @@ DEFINE_string(changeable_string_var, ChangeableString(), "");
+ DEFINE_bool(unused_bool, true, "unused bool-ness");
+ DEFINE_int32(unused_int32, -1001, "");
+ DEFINE_int64(unused_int64, -2001, "");
++DEFINE_uint32(unused_uint32, 1000, "");
+ DEFINE_uint64(unused_uint64, 2000, "");
+ DEFINE_double(unused_double, -1000.0, "");
+ DEFINE_string(unused_string, "unused", "");
+@@ -277,6 +279,7 @@ TEST(FlagTypes, FlagTypes) {
+   AssertIsType<bool>(FLAGS_test_bool);
+   AssertIsType<int32>(FLAGS_test_int32);
+   AssertIsType<int64>(FLAGS_test_int64);
++  AssertIsType<uint32>(FLAGS_test_uint32);
+   AssertIsType<uint64>(FLAGS_test_uint64);
+   AssertIsType<double>(FLAGS_test_double);
+   AssertIsType<string>(FLAGS_test_string);
+@@ -591,11 +594,15 @@ TEST(SetFlagValueTest, IllegalValues) {
+   FLAGS_test_bool = true;
+   FLAGS_test_int32 = 119;
+   FLAGS_test_int64 = 1191;
+-  FLAGS_test_uint64 = 11911;
++  FLAGS_test_uint32 = 11911;
++  FLAGS_test_uint64 = 119111;
+ 
+   EXPECT_EQ("",
+             SetCommandLineOption("test_bool", "12"));
+ 
++  EXPECT_EQ("",
++            SetCommandLineOption("test_uint32", "1970"));
++
+   EXPECT_EQ("",
+             SetCommandLineOption("test_int32", "7000000000000"));
+ 
+@@ -609,6 +616,7 @@ TEST(SetFlagValueTest, IllegalValues) {
+   EXPECT_EQ("", SetCommandLineOption("test_bool", ""));
+   EXPECT_EQ("", SetCommandLineOption("test_int32", ""));
+   EXPECT_EQ("", SetCommandLineOption("test_int64", ""));
++  EXPECT_EQ("", SetCommandLineOption("test_uint32", ""));
+   EXPECT_EQ("", SetCommandLineOption("test_uint64", ""));
+   EXPECT_EQ("", SetCommandLineOption("test_double", ""));
+   EXPECT_EQ("test_string set to \n", SetCommandLineOption("test_string", ""));
+@@ -616,7 +624,8 @@ TEST(SetFlagValueTest, IllegalValues) {
+   EXPECT_TRUE(FLAGS_test_bool);
+   EXPECT_EQ(119, FLAGS_test_int32);
+   EXPECT_EQ(1191, FLAGS_test_int64);
+-  EXPECT_EQ(11911, FLAGS_test_uint64);
++  EXPECT_EQ(11911, FLAGS_test_uint32);
++  EXPECT_EQ(119111, FLAGS_test_uint64);
+ }
+ 
+ 
+@@ -669,14 +678,19 @@ TEST(FromEnvTest, LegalValues) {
+   EXPECT_EQ(-1, Int32FromEnv("INT_VAL2", 10));
+   EXPECT_EQ(10, Int32FromEnv("INT_VAL_UNKNOWN", 10));
+ 
+-  setenv("INT_VAL3", "1099511627776", 1);
++  setenv("INT_VAL3", "4294967295", 1);
++  EXPECT_EQ(1, Uint32FromEnv("INT_VAL1", 10));
++  EXPECT_EQ(4294967295L, Uint32FromEnv("INT_VAL3", 30));
++  EXPECT_EQ(10, Uint32FromEnv("INT_VAL_UNKNOWN", 10));
++
++  setenv("INT_VAL4", "1099511627776", 1);
+   EXPECT_EQ(1, Int64FromEnv("INT_VAL1", 20));
+   EXPECT_EQ(-1, Int64FromEnv("INT_VAL2", 20));
+-  EXPECT_EQ(1099511627776LL, Int64FromEnv("INT_VAL3", 20));
++  EXPECT_EQ(1099511627776LL, Int64FromEnv("INT_VAL4", 20));
+   EXPECT_EQ(20, Int64FromEnv("INT_VAL_UNKNOWN", 20));
+ 
+   EXPECT_EQ(1, Uint64FromEnv("INT_VAL1", 30));
+-  EXPECT_EQ(1099511627776ULL, Uint64FromEnv("INT_VAL3", 30));
++  EXPECT_EQ(1099511627776ULL, Uint64FromEnv("INT_VAL4", 30));
+   EXPECT_EQ(30, Uint64FromEnv("INT_VAL_UNKNOWN", 30));
+ 
+   // I pick values here that can be easily represented exactly in floating-point
+@@ -712,6 +726,11 @@ TEST(FromEnvDeathTest, IllegalValues) {
+   EXPECT_DEATH(Int32FromEnv("INT_BAD3", 10), "error parsing env variable");
+   EXPECT_DEATH(Int32FromEnv("INT_BAD4", 10), "error parsing env variable");
+ 
++  EXPECT_DEATH(Uint32FromEnv("INT_BAD1", 10), "error parsing env variable");
++  EXPECT_DEATH(Uint32FromEnv("INT_BAD2", 10), "error parsing env variable");
++  EXPECT_DEATH(Uint32FromEnv("INT_BAD3", 10), "error parsing env variable");
++  EXPECT_DEATH(Uint32FromEnv("INT_BAD4", 10), "error parsing env variable");
++
+   setenv("BIGINT_BAD1", "18446744073709551616000", 1);
+   EXPECT_DEATH(Int64FromEnv("INT_BAD1", 20), "error parsing env variable");
+   EXPECT_DEATH(Int64FromEnv("INT_BAD3", 20), "error parsing env variable");
+@@ -815,9 +834,10 @@ TEST(FlagSaverTest, CanSaveVariousTypedFlagValues) {
+   // Initializes the flags.
+   FLAGS_test_bool = false;
+   FLAGS_test_int32 = -1;
+-  FLAGS_test_int64 = -2;
+-  FLAGS_test_uint64 = 3;
+-  FLAGS_test_double = 4.0;
++  FLAGS_test_uint32 = 2;
++  FLAGS_test_int64 = -3;
++  FLAGS_test_uint64 = 4;
++  FLAGS_test_double = 5.0;
+   FLAGS_test_string = "good";
+ 
+   // Saves the flag states.
+@@ -827,8 +847,9 @@ TEST(FlagSaverTest, CanSaveVariousTypedFlagValues) {
+     // Modifies the flags.
+     FLAGS_test_bool = true;
+     FLAGS_test_int32 = -5;
+-    FLAGS_test_int64 = -6;
+-    FLAGS_test_uint64 = 7;
++    FLAGS_test_uint32 = 6;
++    FLAGS_test_int64 = -7;
++    FLAGS_test_uint64 = 8;
+     FLAGS_test_double = 8.0;
+     FLAGS_test_string = "bad";
+ 
+@@ -838,8 +859,9 @@ TEST(FlagSaverTest, CanSaveVariousTypedFlagValues) {
+   // Verifies the flag values were restored.
+   EXPECT_FALSE(FLAGS_test_bool);
+   EXPECT_EQ(-1, FLAGS_test_int32);
+-  EXPECT_EQ(-2, FLAGS_test_int64);
+-  EXPECT_EQ(3, FLAGS_test_uint64);
++  EXPECT_EQ(2, FLAGS_test_uint32);
++  EXPECT_EQ(-3, FLAGS_test_int64);
++  EXPECT_EQ(4, FLAGS_test_uint64);
+   EXPECT_DOUBLE_EQ(4.0, FLAGS_test_double);
+   EXPECT_EQ("good", FLAGS_test_string);
+ }
+
+From 81d8a9234b285016e46bad8ca328bd29d11fd29b Mon Sep 17 00:00:00 2001
+From: "Allan L. Bazinet" <allan.bazinet@gmail.com>
+Date: Tue, 5 Apr 2016 10:56:57 -0700
+Subject: [PATCH] Correct FV_MAX_INDEX
+
+---
+ src/gflags.cc | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/gflags.cc b/src/gflags.cc
+index 9881a80e..c4a689da 100644
+--- a/src/gflags.cc
++++ b/src/gflags.cc
+@@ -213,7 +213,7 @@ class FlagValue {
+     FV_UINT64 = 4,
+     FV_DOUBLE = 5,
+     FV_STRING = 6,
+-    FV_MAX_INDEX = 7,
++    FV_MAX_INDEX = 6,
+   };
+   const char* TypeName() const;
+   bool Equal(const FlagValue& x) const;
+
+From 0c17f1ee026694c37b09e8d07e19471e0fe48131 Mon Sep 17 00:00:00 2001
+From: liuchang0812 <liuchang0812@gmail.com>
+Date: Tue, 28 Jun 2016 17:57:02 +0800
+Subject: [PATCH] fix bug about LRLF
+
+---
+ src/gflags.cc | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/src/gflags.cc b/src/gflags.cc
+index c4a689da..a05d801f 100644
+--- a/src/gflags.cc
++++ b/src/gflags.cc
+@@ -1278,7 +1278,11 @@ string CommandLineFlagParser::ProcessOptionsFromStringLocked(
+   for (; line_end; flagfile_contents = line_end + 1) {
+     while (*flagfile_contents && isspace(*flagfile_contents))
+       ++flagfile_contents;
+-    line_end = strchr(flagfile_contents, '\n');
++    // Windows uses "\r\n"
++    line_end = strchr(flagfile_contents, '\r');
++    if (line_end == NULL)
++        line_end = strchr(flagfile_contents, '\n');
++
+     size_t len = line_end ? line_end - flagfile_contents
+                           : strlen(flagfile_contents);
+     string line(flagfile_contents, len);
+
+From 3e946c9ebcea6a4e30988dc26bcb07b94eb8d043 Mon Sep 17 00:00:00 2001
+From: "dreamer.dead" <dreamer.dead@gmail.com>
+Date: Mon, 18 Jul 2016 18:44:20 +0300
+Subject: [PATCH] Add missing reference symbol to a function parameter.
+
+---
+ src/gflags_completions.cc | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/gflags_completions.cc b/src/gflags_completions.cc
+index d7097cae..8fefa1b9 100644
+--- a/src/gflags_completions.cc
++++ b/src/gflags_completions.cc
+@@ -122,7 +122,7 @@ static void CategorizeAllMatchingFlags(
+     NotableFlags *notable_flags);
+ 
+ static void TryFindModuleAndPackageDir(
+-    const vector<CommandLineFlagInfo> all_flags,
++    const vector<CommandLineFlagInfo> &all_flags,
+     string *module,
+     string *package_dir);
+ 
+@@ -472,7 +472,7 @@ static void PushNameWithSuffix(vector<string>* suffixes, const char* suffix) {
+ }
+ 
+ static void TryFindModuleAndPackageDir(
+-    const vector<CommandLineFlagInfo> all_flags,
++    const vector<CommandLineFlagInfo> &all_flags,
+     string *module,
+     string *package_dir) {
+   module->clear();
+
+From 5ef4c3c0766dc29bc342a777e533d3f81736d570 Mon Sep 17 00:00:00 2001
+From: "dreamer.dead" <dreamer.dead@gmail.com>
+Date: Wed, 20 Jul 2016 12:16:34 +0300
+Subject: [PATCH] Fix uint32 type name.
+
+---
+ src/gflags.cc | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/gflags.cc b/src/gflags.cc
+index a05d801f..1619e9c9 100644
+--- a/src/gflags.cc
++++ b/src/gflags.cc
+@@ -409,7 +409,7 @@ const char* FlagValue::TypeName() const {
+   static const char types[] =
+       "bool\0xx"
+       "int32\0x"
+-      "uin32\0x"
++      "uint32\0"
+       "int64\0x"
+       "uint64\0"
+       "double\0"
+
+From fa2663839ca614724218d6edf45eda5df7a8298a Mon Sep 17 00:00:00 2001
+From: "dreamer.dead" <dreamer.dead@gmail.com>
+Date: Wed, 20 Jul 2016 12:18:08 +0300
+Subject: [PATCH] Fix unittests expectations related to uint32.
+
+---
+ test/gflags_unittest.cc | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/test/gflags_unittest.cc b/test/gflags_unittest.cc
+index 045d0125..4c079ba7 100755
+--- a/test/gflags_unittest.cc
++++ b/test/gflags_unittest.cc
+@@ -601,7 +601,7 @@ TEST(SetFlagValueTest, IllegalValues) {
+             SetCommandLineOption("test_bool", "12"));
+ 
+   EXPECT_EQ("",
+-            SetCommandLineOption("test_uint32", "1970"));
++            SetCommandLineOption("test_uint32", "-1970"));
+ 
+   EXPECT_EQ("",
+             SetCommandLineOption("test_int32", "7000000000000"));
+@@ -862,7 +862,7 @@ TEST(FlagSaverTest, CanSaveVariousTypedFlagValues) {
+   EXPECT_EQ(2, FLAGS_test_uint32);
+   EXPECT_EQ(-3, FLAGS_test_int64);
+   EXPECT_EQ(4, FLAGS_test_uint64);
+-  EXPECT_DOUBLE_EQ(4.0, FLAGS_test_double);
++  EXPECT_DOUBLE_EQ(5.0, FLAGS_test_double);
+   EXPECT_EQ("good", FLAGS_test_string);
+ }
+ 
+From 7d31c02de8345d0a12010a0c1c8ebae37898f10e Mon Sep 17 00:00:00 2001
+From: Aaryaman Sagar <aary@users.noreply.github.com>
+Date: Wed, 24 Aug 2016 13:03:08 -0400
+Subject: [PATCH] Fix unsigned comparison error in gflags_reporting.cc (#168)
+
+---
+ src/gflags_reporting.cc | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/gflags_reporting.cc b/src/gflags_reporting.cc
+index 9cc41a74..fb170596 100644
+--- a/src/gflags_reporting.cc
++++ b/src/gflags_reporting.cc
+@@ -126,7 +126,8 @@ string DescribeOneFlag(const CommandLineFlagInfo& flag) {
+   string final_string = "";
+   int chars_in_line = 0;  // how many chars in current line so far?
+   while (1) {
+-    assert(chars_left == strlen(c_string));  // Unless there's a \0 in there?
++    assert(static_cast<size_t>(chars_left)
++            == strlen(c_string));  // Unless there's a \0 in there?
+     const char* newline = strchr(c_string, '\n');
+     if (newline == NULL && chars_in_line+chars_left < kLineLength) {
+       // The whole remainder of the string fits on this line
+
+From cce68f0c9c5d054017425e6e6fd54f696d36e8ee Mon Sep 17 00:00:00 2001
+From: David Lam <dylam07@gmail.com>
+Date: Wed, 5 Oct 2016 00:25:50 -0700
+Subject: [PATCH] Fix error messages to not truncate to 255 characters (#175)
+
+---
+ src/gflags.cc | 4 +---
+ 1 file changed, 1 insertion(+), 3 deletions(-)
+
+diff --git a/src/gflags.cc b/src/gflags.cc
+index 2c9e653c..fe5300fd 100644
+--- a/src/gflags.cc
++++ b/src/gflags.cc
+@@ -171,12 +171,10 @@ enum DieWhenReporting { DIE, DO_NOT_DIE };
+ 
+ // Report Error and exit if requested.
+ static void ReportError(DieWhenReporting should_die, const char* format, ...) {
+-  char error_message[255];
+   va_list ap;
+   va_start(ap, format);
+-  vsnprintf(error_message, sizeof(error_message), format, ap);
++  vfprintf(stderr, format, ap);
+   va_end(ap);
+-  fprintf(stderr, "%s", error_message);
+   fflush(stderr);   // should be unnecessary, but cygwin's rxvt buffers stderr
+   if (should_die == DIE) gflags_exitfunc(1);
+ }
+
+From 14c0e93755d5a32c3d2029d83094564b8823b7b4 Mon Sep 17 00:00:00 2001
+From: Todd Lipcon <todd@cloudera.com>
+Date: Wed, 12 Oct 2016 10:23:42 -0700
+Subject: [PATCH] Convert dashes to underscores for unknown flags (#177)
+
+---
+ src/gflags.cc           |  7 ++++++-
+ test/gflags_unittest.cc | 13 +++++++++++++
+ 2 files changed, 19 insertions(+), 1 deletion(-)
+
+diff --git a/src/gflags.cc b/src/gflags.cc
+index fe5300fd..42dcd049 100644
+--- a/src/gflags.cc
++++ b/src/gflags.cc
+@@ -771,7 +771,12 @@ void FlagRegistry::RegisterFlag(CommandLineFlag* flag) {
+ CommandLineFlag* FlagRegistry::FindFlagLocked(const char* name) {
+   FlagConstIterator i = flags_.find(name);
+   if (i == flags_.end()) {
+-    return NULL;
++    // If the name has dashes in it, try again after replacing with
++    // underscores.
++    if (strchr(name, '-') == NULL) return NULL;
++    string name_rep = name;
++    std::replace(name_rep.begin(), name_rep.end(), '-', '_');
++    return FindFlagLocked(name_rep.c_str());
+   } else {
+     return i->second;
+   }
+diff --git a/test/gflags_unittest.cc b/test/gflags_unittest.cc
+index 47dfd3c4..9a922efd 100755
+--- a/test/gflags_unittest.cc
++++ b/test/gflags_unittest.cc
+@@ -357,6 +357,19 @@ TEST(FlagFileTest, ReadFlagsFromString) {
+       false,
+       123,
+       123.0);
++
++  // Test that flags can use dashes instead of underscores.
++  TestFlagString(
++      // Flag string
++      "-test-string=initial\n"
++      "--test-bool=false\n"
++      "--test-int32=123\n"
++      "--test-double=123.0\n",
++      // Expected values
++      "initial",
++      false,
++      123,
++      123.0);
+ }
+ 
+ // Tests the filename part of the flagfile
+
+From ac6834e979a95bc4fefba2083290bcd77f6c3fa2 Mon Sep 17 00:00:00 2001
+From: Andreas Schuh <andreas.schuh.84@gmail.com>
+Date: Sat, 26 Nov 2016 21:18:30 +0000
+Subject: [PATCH] fix: Remove unused program_name variable
+
+---
+ src/gflags.cc | 3 ---
+ 1 file changed, 3 deletions(-)
+
+diff --git a/src/gflags.cc b/src/gflags.cc
+index bc62227b..921b4f93 100644
+--- a/src/gflags.cc
++++ b/src/gflags.cc
+@@ -1061,9 +1061,6 @@ static string ReadFileIntoString(const char* filename) {
+ 
+ uint32 CommandLineFlagParser::ParseNewCommandLineFlags(int* argc, char*** argv,
+                                                        bool remove_flags) {
+-  const char *program_name = strrchr((*argv)[0], PATH_SEPARATOR);   // nix path
+-  program_name = (program_name == NULL ? (*argv)[0] : program_name+1);
+-
+   int first_nonopt = *argc;        // for non-options moved to the end
+ 
+   registry_->Lock();
+
+From 95ffb27c9c7496ede1409e042571054c70cb9519 Mon Sep 17 00:00:00 2001
+From: Mmanu Chaturvedi <m-chaturvedi@users.noreply.github.com>
+Date: Fri, 12 May 2017 15:11:28 -0600
+Subject: [PATCH] Fix static initialization order fiasco caused by global
+ registry lock (#215)
+
+---
+ src/gflags.cc | 5 ++---
+ 1 file changed, 2 insertions(+), 3 deletions(-)
+
+diff --git a/src/gflags.cc b/src/gflags.cc
+index 921b4f93..08e4f45d 100644
+--- a/src/gflags.cc
++++ b/src/gflags.cc
+@@ -726,7 +726,6 @@ class FlagRegistry {
+   static FlagRegistry* global_registry_;   // a singleton registry
+ 
+   Mutex lock_;
+-  static Mutex global_registry_lock_;
+ 
+   static void InitGlobalRegistry();
+ 
+@@ -929,10 +928,10 @@ bool FlagRegistry::SetFlagLocked(CommandLineFlag* flag,
+ 
+ // Get the singleton FlagRegistry object
+ FlagRegistry* FlagRegistry::global_registry_ = NULL;
+-Mutex FlagRegistry::global_registry_lock_(Mutex::LINKER_INITIALIZED);
+ 
+ FlagRegistry* FlagRegistry::GlobalRegistry() {
+-  MutexLock acquire_lock(&global_registry_lock_);
++  static Mutex lock(Mutex::LINKER_INITIALIZED);
++  MutexLock acquire_lock(&lock);
+   if (!global_registry_) {
+     global_registry_ = new FlagRegistry;
+   }
+
+From 74603f5ed3bb99d699b0c5cf091d870f22ea255b Mon Sep 17 00:00:00 2001
+From: Andreas Schuh <andreas.schuh.84@gmail.com>
+Date: Tue, 11 Jul 2017 09:45:17 +0100
+Subject: [PATCH] fix: Static code analyzer error regarding strncmp with empty
+ kRootDir string
+
+---
+ src/gflags.cc | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/gflags.cc b/src/gflags.cc
+index 08e4f45d..f2707986 100644
+--- a/src/gflags.cc
++++ b/src/gflags.cc
+@@ -591,7 +591,7 @@ const char* CommandLineFlag::CleanFileName() const {
+   const char* clean_name = filename() + strlen(filename()) - 1;
+   while ( clean_name > filename() ) {
+     if (*clean_name == PATH_SEPARATOR) {
+-      if (strncmp(clean_name, kRootDir, sizeof(kRootDir)-1) == 0) {
++      if (sizeof(kRootDir) > 1 && strncmp(clean_name, kRootDir, sizeof(kRootDir)-1) == 0) {
+         clean_name += sizeof(kRootDir)-1;    // past root-dir
+         break;
+       }
+
+From aa2d0f7b4ed11849f40c3a1dc573ac331ebdaebd Mon Sep 17 00:00:00 2001
+From: Andreas Schuh <andreas.schuh.84@gmail.com>
+Date: Wed, 12 Jul 2017 00:30:41 +0100
+Subject: [PATCH] fix: Remove obsolete and unused CleanFileName code
+
+---
+ src/gflags.cc | 28 ++++++++--------------------
+ 1 file changed, 8 insertions(+), 20 deletions(-)
+
+diff --git a/src/gflags.cc b/src/gflags.cc
+index f2707986..05aa40be 100644
+--- a/src/gflags.cc
++++ b/src/gflags.cc
+@@ -580,26 +580,14 @@ CommandLineFlag::~CommandLineFlag() {
+ }
+ 
+ const char* CommandLineFlag::CleanFileName() const {
+-  // Compute top-level directory & file that this appears in
+-  // search full path backwards.
+-  // Stop going backwards at kRootDir; and skip by the first slash.
+-  static const char kRootDir[] = "";    // can set this to root directory,
+-
+-  if (sizeof(kRootDir)-1 == 0)          // no prefix to strip
+-    return filename();
+-
+-  const char* clean_name = filename() + strlen(filename()) - 1;
+-  while ( clean_name > filename() ) {
+-    if (*clean_name == PATH_SEPARATOR) {
+-      if (sizeof(kRootDir) > 1 && strncmp(clean_name, kRootDir, sizeof(kRootDir)-1) == 0) {
+-        clean_name += sizeof(kRootDir)-1;    // past root-dir
+-        break;
+-      }
+-    }
+-    --clean_name;
+-  }
+-  while ( *clean_name == PATH_SEPARATOR ) ++clean_name;  // Skip any slashes
+-  return clean_name;
++  // This function has been used to strip off a common prefix from
++  // flag source file names. Because flags can be defined in different
++  // shared libraries, there may not be a single common prefix.
++  // Further, this functionality hasn't been active for many years.
++  // Need a better way to produce more user friendly help output or
++  // "anonymize" file paths in help output, respectively.
++  // Follow issue at: https://github.com/gflags/gflags/issues/86
++  return filename();
+ }
+ 
+ void CommandLineFlag::FillCommandLineFlagInfo(
+
+From 60784b53e364c2e2594916bc84af075c4f679fa8 Mon Sep 17 00:00:00 2001
+From: Yi Wang <yiwang01@baidu.com>
+Date: Sat, 5 Aug 2017 16:05:17 -0700
+Subject: [PATCH] Remove using ::fLS::clstring;
+
+---
+ src/gflags_declare.h.in | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/src/gflags_declare.h.in b/src/gflags_declare.h.in
+index 508d46b3..752a34d0 100644
+--- a/src/gflags_declare.h.in
++++ b/src/gflags_declare.h.in
+@@ -144,7 +144,6 @@ typedef std::string clstring;
+ #define DECLARE_string(name) \
+   /* We always want to import declared variables, dll or no */ \
+   namespace fLS { \
+-  using ::fLS::clstring; \
+   extern GFLAGS_DLL_DECLARE_FLAG ::fLS::clstring& FLAGS_##name; \
+   } \
+   using fLS::FLAGS_##name
+
+From 6e536553ef3d15c9657e6315b24120fcbe1d5f00 Mon Sep 17 00:00:00 2001
+From: drillsar <travelagloo.com>
+Date: Tue, 11 Jul 2017 20:59:13 -0400
+Subject: [PATCH] Fix V728 excessive check
+
+---
+ src/gflags.cc | 3 +--
+ 1 file changed, 1 insertion(+), 2 deletions(-)
+
+diff --git a/src/gflags.cc b/src/gflags.cc
+index 9869782b..504b7226 100644
+--- a/src/gflags.cc
++++ b/src/gflags.cc
+@@ -1036,8 +1036,7 @@ uint32 CommandLineFlagParser::ParseNewCommandLineFlags(int* argc, char*** argv,
+     char* arg = (*argv)[i];
+ 
+     // Like getopt(), we permute non-option flags to be at the end.
+-    if (arg[0] != '-' ||           // must be a program argument
+-        (arg[0] == '-' && arg[1] == '\0')) {  // "-" is an argument, not a flag
++    if (arg[0] != '-' || arg[1] == '\0') {  // must be a program argument "-" is an argument, not a flag
+       memmove((*argv) + i, (*argv) + i+1, (*argc - (i+1)) * sizeof((*argv)[i]));
+       (*argv)[*argc-1] = arg;      // we go last
+       first_nonopt--;              // we've been pushed onto the stack
+
+From 48677f930d9944889ec8d2ab95fbc849af8135fa Mon Sep 17 00:00:00 2001
+From: wuchenghui <wuchenghui@xiaomi.com>
+Date: Fri, 11 May 2018 15:34:38 +0800
+Subject: [PATCH] fix missing-field-initializers warnings on gcc
+
+---
+ src/gflags_completions.cc | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/src/gflags_completions.cc b/src/gflags_completions.cc
+index f7724864..4afc521f 100644
+--- a/src/gflags_completions.cc
++++ b/src/gflags_completions.cc
+@@ -179,6 +179,11 @@ struct CompletionOptions {
+   bool flag_description_substring_search;
+   bool return_all_matching_flags;
+   bool force_no_update;
++  CompletionOptions(): flag_name_substring_search(false),
++                       flag_location_substring_search(false),
++                       flag_description_substring_search(false),
++                       return_all_matching_flags(false),
++                       force_no_update(false) { }
+ };
+ 
+ // Notable flags are flags that are special or preferred for some
+@@ -202,7 +207,7 @@ struct NotableFlags {
+ static void PrintFlagCompletionInfo(void) {
+   string cursor_word = FLAGS_tab_completion_word;
+   string canonical_token;
+-  CompletionOptions options = { };
++  CompletionOptions options = CompletionOptions();
+   CanonicalizeCursorWordAndSearchOptions(
+       cursor_word,
+       &canonical_token,
+
+From 7e709881881c2663569cd49a93e5c8d9228d868e Mon Sep 17 00:00:00 2001
+From: Andreas Schuh <aschuh@heartflow.com>
+Date: Mon, 15 Oct 2018 01:56:30 -0700
+Subject: [PATCH] fix: PVS Studio warnings
+
+---
+ src/gflags.cc             | 7 +++----
+ src/gflags_completions.cc | 3 +--
+ 2 files changed, 4 insertions(+), 6 deletions(-)
+
+diff --git a/src/gflags.cc b/src/gflags.cc
+index 976319fc..e0171fe4 100644
+--- a/src/gflags.cc
++++ b/src/gflags.cc
+@@ -1036,16 +1036,15 @@ uint32 CommandLineFlagParser::ParseNewCommandLineFlags(int* argc, char*** argv,
+     char* arg = (*argv)[i];
+ 
+     // Like getopt(), we permute non-option flags to be at the end.
+-    if (arg[0] != '-' || arg[1] == '\0') {  // must be a program argument "-" is an argument, not a flag
++    if (arg[0] != '-' || arg[1] == '\0') {  // must be a program argument: "-" is an argument, not a flag
+       memmove((*argv) + i, (*argv) + i+1, (*argc - (i+1)) * sizeof((*argv)[i]));
+       (*argv)[*argc-1] = arg;      // we go last
+       first_nonopt--;              // we've been pushed onto the stack
+       i--;                         // to undo the i++ in the loop
+       continue;
+     }
+-
+-    if (arg[0] == '-') arg++;      // allow leading '-'
+-    if (arg[0] == '-') arg++;      // or leading '--'
++    arg++;                     // skip leading '-'
++    if (arg[0] == '-') arg++;  // or leading '--'
+ 
+     // -- alone means what it does for GNU: stop options parsing
+     if (*arg == '\0') {
+diff --git a/src/gflags_completions.cc b/src/gflags_completions.cc
+index 4afc521f..c53a128d 100644
+--- a/src/gflags_completions.cc
++++ b/src/gflags_completions.cc
+@@ -550,8 +550,7 @@ static void FinalizeCompletionOutput(
+ 
+   vector<DisplayInfoGroup> output_groups;
+   bool perfect_match_found = false;
+-  if (lines_so_far < max_desired_lines &&
+-      !notable_flags->perfect_match_flag.empty()) {
++  if (!notable_flags->perfect_match_flag.empty()) {
+     perfect_match_found = true;
+     DisplayInfoGroup group =
+         { "",
+
+From 4c0bbc0604c99a077aff91e10948befc073c4640 Mon Sep 17 00:00:00 2001
+From: Andreas Schuh <andreas.schuh.84@gmail.com>
+Date: Fri, 9 Nov 2018 17:46:42 +0000
+Subject: [PATCH] fix: Use 'default' visibility for GCC
+
+---
+ src/config.h.in         | 2 ++
+ src/gflags_declare.h.in | 4 ++++
+ 2 files changed, 6 insertions(+)
+
+diff --git a/src/config.h.in b/src/config.h.in
+index b90b7e68..c33d207c 100644
+--- a/src/config.h.in
++++ b/src/config.h.in
+@@ -94,6 +94,8 @@
+ #ifndef GFLAGS_DLL_DECL
+ #  if GFLAGS_IS_A_DLL && defined(_MSC_VER)
+ #    define GFLAGS_DLL_DECL __declspec(dllexport)
++#  elif defined(__GNUC__) && __GNUC__ >= 4
++#    define GFLAGS_DLL_DECL __attribute__((visibility("default")))
+ #  else
+ #    define GFLAGS_DLL_DECL
+ #  endif
+diff --git a/src/gflags_declare.h.in b/src/gflags_declare.h.in
+index 752a34d0..ab7bd248 100644
+--- a/src/gflags_declare.h.in
++++ b/src/gflags_declare.h.in
+@@ -49,6 +49,8 @@
+ #ifndef GFLAGS_DLL_DECL
+ #  if @GFLAGS_IS_A_DLL@ && defined(_MSC_VER)
+ #    define GFLAGS_DLL_DECL __declspec(dllimport)
++#  elif defined(__GNUC__) && __GNUC__ >= 4
++#    define GFLAGS_DLL_DECL __attribute__((visibility("default")))
+ #  else
+ #    define GFLAGS_DLL_DECL
+ #  endif
+@@ -58,6 +60,8 @@
+ #ifndef GFLAGS_DLL_DECLARE_FLAG
+ #  ifdef _MSC_VER
+ #    define GFLAGS_DLL_DECLARE_FLAG __declspec(dllimport)
++#  elif defined(__GNUC__) && __GNUC__ >= 4
++#    define GFLAGS_DLL_DECLARE_FLAG __attribute__((visibility("default")))
+ #  else
+ #    define GFLAGS_DLL_DECLARE_FLAG
+ #  endif
